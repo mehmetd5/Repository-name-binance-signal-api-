@@ -5,10 +5,8 @@ import pandas as pd
 
 app = FastAPI()
 
-# Exchange seçimi (Render ENV'den geliyor)
-EXCHANGE = os.getenv("EXCHANGE", "BINANCE")
+EXCHANGE = os.getenv("EXCHANGE", "MEXC").upper()
 
-# BASE URL
 if EXCHANGE == "MEXC":
     BASE_URL = "https://contract.mexc.com"
 else:
@@ -32,20 +30,45 @@ def status():
     }
 
 
-# 📊 Kline verisi çek
+def normalize_symbol(symbol: str):
+    symbol = symbol.upper()
+    if EXCHANGE == "MEXC":
+        if "_" not in symbol:
+            symbol = symbol.replace("USDT", "_USDT")
+    return symbol
+
+
 def get_klines(symbol="BTCUSDT", interval="Min5", limit=100):
+    symbol = normalize_symbol(symbol)
 
     if EXCHANGE == "MEXC":
         url = f"{BASE_URL}/api/v1/contract/kline/{symbol}"
         params = {
-            "interval": interval,
-            "limit": limit
+            "interval": interval
         }
+
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
-        data = r.json()["data"]
+        resp = r.json()
 
-        df = pd.DataFrame(data)
+        if not resp.get("success"):
+            raise Exception(f"MEXC response hatali: {resp}")
+
+        data = resp.get("data", {})
+
+        if not data or "close" not in data:
+            raise Exception(f"MEXC kline data hatali: {resp}")
+
+        df = pd.DataFrame({
+            "time": data.get("time", []),
+            "open": data.get("open", []),
+            "high": data.get("high", []),
+            "low": data.get("low", []),
+            "close": data.get("close", []),
+            "volume": data.get("vol", [])
+        })
+
+        df = df.tail(limit)
         df["close"] = df["close"].astype(float)
 
     else:
@@ -55,20 +78,20 @@ def get_klines(symbol="BTCUSDT", interval="Min5", limit=100):
             "interval": "5m",
             "limit": limit
         }
+
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
         data = r.json()
 
         df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "close_time","qav","trades","taker_base","taker_quote","ignore"
+            "time", "open", "high", "low", "close", "volume",
+            "close_time", "qav", "trades", "taker_base", "taker_quote", "ignore"
         ])
         df["close"] = df["close"].astype(float)
 
     return df
 
 
-# 📉 RSI
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -81,7 +104,6 @@ def rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
-# 🚀 ANALYZE
 @app.get("/analyze")
 def analyze(symbol: str = Query("BTCUSDT")):
     try:
@@ -102,8 +124,14 @@ def analyze(symbol: str = Query("BTCUSDT")):
 
         if price > ema20:
             score += 1
+        else:
+            score -= 1
+
         if ema20 > ema50:
             score += 1
+        else:
+            score -= 1
+
         if rsi_val > 55:
             score += 1
         elif rsi_val < 45:
@@ -111,7 +139,7 @@ def analyze(symbol: str = Query("BTCUSDT")):
 
         if score >= 2:
             signal = "LONG"
-        elif score <= -1:
+        elif score <= -2:
             signal = "SHORT"
         else:
             signal = "BEKLE"
@@ -119,16 +147,27 @@ def analyze(symbol: str = Query("BTCUSDT")):
         return {
             "status": "ok",
             "exchange": EXCHANGE,
-            "symbol": symbol,
-            "price": price,
-            "ema20": ema20,
-            "ema50": ema50,
-            "rsi": rsi_val,
+            "symbol": normalize_symbol(symbol),
+            "price": round(price, 6),
+            "ema20": round(ema20, 6),
+            "ema50": round(ema50, 6),
+            "rsi": round(rsi_val, 2),
+            "score": score,
             "signal": signal
         }
 
     except Exception as e:
         return {
             "status": "error",
+            "exchange": EXCHANGE,
             "message": str(e)
         }
+
+
+@app.get("/top")
+def top():
+    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
+    return {
+        "exchange": EXCHANGE,
+        "results": [analyze(s) for s in symbols]
+    }
