@@ -1,18 +1,27 @@
+import os
 from fastapi import FastAPI, Query
 import requests
 import pandas as pd
 
 app = FastAPI()
 
+EXCHANGE = os.getenv("EXCHANGE", "BINANCE")
 BINANCE_BASE = "https://fapi.binance.com"
 
 @app.get("/")
 def home():
-    return {"status": "ok", "message": "Binance Signal API calisiyor"}
+    return {
+        "status": "ok",
+        "message": "Signal API calisiyor",
+        "exchange": EXCHANGE
+    }
 
 @app.get("/status")
 def status():
-    return {"status": "ok", "exchange": "BINANCE"}
+    return {
+        "status": "ok",
+        "exchange": EXCHANGE
+    }
 
 def get_klines(symbol="BTCUSDT", interval="5m", limit=100):
     url = f"{BINANCE_BASE}/fapi/v1/klines"
@@ -69,7 +78,7 @@ def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("5m")):
             signal = "BEKLE"
 
         return {
-            "exchange": "BINANCE",
+            "exchange": EXCHANGE,
             "symbol": symbol.upper(),
             "interval": interval,
             "price": price,
@@ -81,9 +90,16 @@ def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("5m")):
         }
 
     except Exception as e:
-        return {"exchange": "BINANCE", "status": "error", "message": str(e)}
+        return {
+            "exchange": EXCHANGE,
+            "status": "error",
+            "message": str(e)
+        }
 
 @app.get("/top")
 def top():
     symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-    return {"exchange": "BINANCE", "results": [analyze(s, "5m") for s in symbols]}
+    return {
+        "exchange": EXCHANGE,
+        "results": [analyze(s, "5m") for s in symbols]
+    }
