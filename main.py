@@ -5,8 +5,15 @@ import pandas as pd
 
 app = FastAPI()
 
+# Exchange seçimi (Render ENV'den geliyor)
 EXCHANGE = os.getenv("EXCHANGE", "BINANCE")
-BINANCE_BASE = "https://fapi.binance.com"
+
+# BASE URL
+if EXCHANGE == "MEXC":
+    BASE_URL = "https://contract.mexc.com"
+else:
+    BASE_URL = "https://fapi.binance.com"
+
 
 @app.get("/")
 def home():
@@ -16,6 +23,7 @@ def home():
         "exchange": EXCHANGE
     }
 
+
 @app.get("/status")
 def status():
     return {
@@ -23,48 +31,79 @@ def status():
         "exchange": EXCHANGE
     }
 
-def get_klines(symbol="BTCUSDT", interval="5m", limit=100):
-    url = f"{BINANCE_BASE}/fapi/v1/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    r = requests.get(url, params=params, timeout=15)
-    r.raise_for_status()
-    data = r.json()
 
-    df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","qav","trades","taker_base","taker_quote","ignore"
-    ])
-    df["close"] = df["close"].astype(float)
+# 📊 Kline verisi çek
+def get_klines(symbol="BTCUSDT", interval="Min5", limit=100):
+
+    if EXCHANGE == "MEXC":
+        url = f"{BASE_URL}/api/v1/contract/kline/{symbol}"
+        params = {
+            "interval": interval,
+            "limit": limit
+        }
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()["data"]
+
+        df = pd.DataFrame(data)
+        df["close"] = df["close"].astype(float)
+
+    else:
+        url = f"{BASE_URL}/fapi/v1/klines"
+        params = {
+            "symbol": symbol,
+            "interval": "5m",
+            "limit": limit
+        }
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "close_time","qav","trades","taker_base","taker_quote","ignore"
+        ])
+        df["close"] = df["close"].astype(float)
+
     return df
 
+
+# 📉 RSI
 def rsi(series, period=14):
     delta = series.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
+
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
+
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+
+# 🚀 ANALYZE
 @app.get("/analyze")
-def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("5m")):
+def analyze(symbol: str = Query("BTCUSDT")):
     try:
-        df = get_klines(symbol.upper(), interval)
+        df = get_klines(symbol)
 
         df["ema20"] = df["close"].ewm(span=20).mean()
         df["ema50"] = df["close"].ewm(span=50).mean()
         df["rsi"] = rsi(df["close"])
 
         last = df.iloc[-1]
+
         price = float(last["close"])
         ema20 = float(last["ema20"])
         ema50 = float(last["ema50"])
         rsi_val = float(last["rsi"])
 
         score = 0
-        score += 1 if price > ema20 else -1
-        score += 1 if ema20 > ema50 else -1
 
+        if price > ema20:
+            score += 1
+        if ema20 > ema50:
+            score += 1
         if rsi_val > 55:
             score += 1
         elif rsi_val < 45:
@@ -72,34 +111,24 @@ def analyze(symbol: str = Query("BTCUSDT"), interval: str = Query("5m")):
 
         if score >= 2:
             signal = "LONG"
-        elif score <= -2:
+        elif score <= -1:
             signal = "SHORT"
         else:
             signal = "BEKLE"
 
         return {
+            "status": "ok",
             "exchange": EXCHANGE,
-            "symbol": symbol.upper(),
-            "interval": interval,
+            "symbol": symbol,
             "price": price,
-            "rsi": round(rsi_val, 2),
-            "ema20": round(ema20, 4),
-            "ema50": round(ema50, 4),
-            "score": score,
+            "ema20": ema20,
+            "ema50": ema50,
+            "rsi": rsi_val,
             "signal": signal
         }
 
     except Exception as e:
         return {
-            "exchange": EXCHANGE,
             "status": "error",
             "message": str(e)
         }
-
-@app.get("/top")
-def top():
-    symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"]
-    return {
-        "exchange": EXCHANGE,
-        "results": [analyze(s, "5m") for s in symbols]
-    }
